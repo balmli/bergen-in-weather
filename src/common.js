@@ -34,8 +34,9 @@ export function makeNoiseTexture(size = 256, seed = 7) {
 // ---- global simulation state shared by everything ---------------------------
 export const G = {
   time: 0,            // monotonic sim seconds (dt is clamped, so this never jumps)
-  clock: 16.6,        // local clock hour (CEST)
-  dayOfYear: 272,
+  clock: 16.6,        // local clock hour (Norwegian time, CET/CEST)
+  date: { y: 2026, m: 9, d: 29 }, // simulated calendar date (main.js starts it at today in Oslo)
+  starLimit: 5,       // naked-eye limiting magnitude right now
   autoTime: 0,        // hours advanced per real second when > 0
   rain: 0.65,         // 0..1 rain intensity (smoothed toward target)
   wind: 0.65,         // 0..1 (mapped to m/s below)

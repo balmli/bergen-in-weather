@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { G, makeNoiseTexture, clamp, lerp, smoothstep, installFogChunks, fogX } from './common.js';
 import { Sky } from './sky.js';
+import { Stars } from './stars.js';
+import { todayInOslo, addDays, strToDate, moonPhaseName } from './astro.js';
 import { loadDEM, registerPonds, paintGround, makeTerrain, heightAt } from './terrain.js';
 import { buildCity, cityUniforms } from './city.js';
 import { buildHero } from './hero.js';
@@ -78,6 +80,10 @@ async function main() {
 
   // sky + lights
   const sky = new Sky(); scene.add(sky.mesh);
+  const { y, m, d } = todayInOslo(); G.date = { y, m, d };
+  if (params.has('date')) G.date = strToDate(params.get('date')) || G.date;
+  const stars = new Stars(scene, await (await fetch('/stars.json')).json(), sky);
+  if (params.get('names') === '1') stars.setNames(true);
   const sun = new THREE.DirectionalLight(0xffffff, 3);
   sun.castShadow = true;
   sun.shadow.mapSize.set(4096, 4096);
@@ -91,7 +97,7 @@ async function main() {
   const rig = new CameraRig(camera, canvas);
   const weather = new Weather(scene, camera, renderer);
   const post = makePost(renderer, scene, camera);
-  const ui = initUI({ rig, weather, G, params });
+  const ui = initUI({ rig, weather, G, params, stars });
   if (window.__extra) await window.__extra({ scene, camera, city, renderer, weather });
 
   addEventListener('resize', () => {
@@ -109,12 +115,14 @@ async function main() {
   if (params.has('tour')) rig.startTour(+params.get('tour'));
   if (params.get('ui') === '0') document.body.classList.add('noui');
 
-  const app = { cars, trams, lamps, life, trees, people, boats, scene, camera, renderer, rig, weather, sky, sun, moon, post, G, terrain, sea, city: cityRes, cityData: city, THREE };
+  const app = { stars, cars, trams, lamps, life, trees, people, boats, scene, camera, renderer, rig, weather, sky, sun, moon, post, G, terrain, sea, city: cityRes, cityData: city, THREE };
   window.__sim = app;
   // review helper: pose the camera / weather, let things settle, then POST a JPEG to ./shots via the dev server
   window.__shot = async (name, o = {}) => {
     if (o.cam) rig.setPose(...o.cam);
     if (o.t != null) G.clock = o.t;
+    if (o.date) G.date = strToDate(o.date);
+    if (o.names != null) stars.setNames(o.names);
     for (const k of ['rain', 'wind', 'cover']) if (o[k] != null) { G[k] = G.targets[k] = o[k]; }
     if (o.rain != null || o.wind != null) weather.dirty = true;
     if (o.time != null) G.time = o.time;
@@ -144,13 +152,22 @@ async function main() {
     // uneven frames must never destabilise anything: clamp render dt hard
     dt = clamp(dt, 0, 1 / 20);
     if (params.has('fixeddt')) dt = 1 / 60;
+    tick(dt);
+  }
+  // review helper: advance the sim n frames synchronously (rAF is throttled when the browser pane is hidden)
+  window.__step = (n = 1, dt = 1 / 30) => { for (let i = 0; i < n; i++) tick(dt); };
+  function tick(dt) {
     G.time += dt;
-    if (G.autoTime > 0) G.clock = (G.clock + G.autoTime * dt) % 24;
+    if (G.autoTime > 0) {
+      G.clock += G.autoTime * dt;
+      while (G.clock >= 24) { G.clock -= 24; G.date = addDays(G.date, 1); }
+    }
     weather.step(dt);
     rig.update(dt);
     camera.updateMatrixWorld();
 
     sky.update(camera);
+    stars.update(camera, renderer, sky.state);
     const L = sky.light;
     // key light: sun, moon light as a weak second directional
     sun.color.copy(L.sunColor); sun.intensity = L.sunIntensity;
@@ -208,7 +225,8 @@ async function main() {
     const st = $('status');
     if (st && frameCount.n % 15 === 0) {
       const hh = Math.floor(G.clock), mm = Math.floor((G.clock % 1) * 60);
-      st.textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}  sun ${G.sunElev.toFixed(0)}°  ${weather.label}\n${(3 + G.wind * 21).toFixed(0)} m/s  ${fps.toFixed(0)} fps`;
+      const S = sky.state;
+      st.textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}  sun ${G.sunElev.toFixed(0)}°  ${weather.label}\nmoon ${moonPhaseName(S.moonAngle).toLowerCase()} ${Math.round(S.moonFrac * 100)}%${S.moon.el > 0 ? ` ↑${S.moon.el.toFixed(0)}°` : ' (down)'}\n${(3 + G.wind * 21).toFixed(0)} m/s  ${fps.toFixed(0)} fps`;
     }
   }
   requestAnimationFrame(frame);

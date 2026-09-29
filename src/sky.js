@@ -1,35 +1,8 @@
 import * as THREE from 'three';
 import { G, GLSL_NOISE, clamp, lerp, smoothstep } from './common.js';
+import { skyState } from './astro.js';
 
-const LAT = 60.39 * Math.PI / 180;
 const rad = Math.PI / 180;
-
-// Sun / moon position for Bergen. Local clock is CEST (UTC+2); solar noon ~13:29 in late September.
-export function solarPosition(clock, doy) {
-  const decl = -23.44 * rad * Math.cos(2 * Math.PI / 365 * (doy + 10));
-  const eot = 9.87 * Math.sin(2 * 2 * Math.PI * (doy - 81) / 364) - 7.53 * Math.cos(2 * Math.PI * (doy - 81) / 364) - 1.5 * Math.sin(2 * Math.PI * (doy - 81) / 364); // minutes
-  const solar = clock - 2 + 5.333 / 15 * 1 * -1 + eot / 60 + 5.333 / 15 * 0; // -> UTC hour approx
-  const solarTime = (clock - 2) + 5.333 / 15 + eot / 60;                  // local apparent solar time
-  const H = (solarTime - 12) * 15 * rad;
-  const sinE = Math.sin(LAT) * Math.sin(decl) + Math.cos(LAT) * Math.cos(decl) * Math.cos(H);
-  const el = Math.asin(clamp(sinE, -1, 1));
-  let az = Math.acos(clamp((Math.sin(decl) - sinE * Math.sin(LAT)) / (Math.cos(el) * Math.cos(LAT) + 1e-6), -1, 1));
-  if (H > 0) az = 2 * Math.PI - az; // afternoon: west of south
-  return { el, az, decl, H };
-}
-export function dirFromAzEl(az, el, out = new THREE.Vector3()) {
-  // azimuth from north clockwise; x=east, z=south  => north = -z
-  return out.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)).normalize();
-}
-function moonPosition(H, decl, elongDeg, doy) {
-  const Hm = H - elongDeg * rad;
-  const dm = (16 + 10 * Math.sin(doy * 0.23)) * rad;
-  const sinE = Math.sin(LAT) * Math.sin(dm) + Math.cos(LAT) * Math.cos(dm) * Math.cos(Hm);
-  const el = Math.asin(clamp(sinE, -1, 1));
-  let az = Math.acos(clamp((Math.sin(dm) - sinE * Math.sin(LAT)) / (Math.cos(el) * Math.cos(LAT) + 1e-6), -1, 1));
-  if (Hm > 0) az = 2 * Math.PI - az;
-  return { el, az };
-}
 
 // keyframes by sun elevation (deg): zenith, horizon (linear radiance), sun light colour, sun light strength
 const KF = [
@@ -65,7 +38,11 @@ precision highp float;
 varying vec3 vDir;
 uniform vec3 uSunDir, uMoonDir, uZenith, uHorizon, uSunCol, uGround;
 uniform vec3 uCloudLit, uCloudDark, uCamPos;
-uniform float uCover, uStorm, uNight, uTime, uDisc, uMoonVis, uSunVis, uSunIntensity, uGlow, uFlash;
+uniform float uCover, uStorm, uNight, uTime, uDisc, uMoonVis, uSunVis, uSunIntensity, uGlow, uFlash, uMW, uMoonFrac;
+uniform mat3 uMinv;
+const vec3 GAL_POLE = vec3(-0.868, -0.198, 0.456);
+const vec3 GAL_X = vec3(-0.0549, -0.8734, -0.4838);
+const vec3 GAL_Y = vec3(0.4941, -0.4448, 0.7470);
 uniform vec2 uWind;
 uniform vec3 uFlashDir;
 ${GLSL_NOISE}
@@ -94,22 +71,23 @@ void main(){
 
   vec3 col = sky;
 
-  // ---- stars
-  if (uNight > 0.02) {
-    vec3 q = dir * 220.0;
-    vec3 c = floor(q);
-    vec3 f = fract(q) - 0.5;
-    float r = hash12(c.xy * 1.31 + c.z * 17.7);
-    vec2 o = hash22(c.xz + c.y * 7.1) - 0.5;
-    float d = length(f.xy - o.xy * 0.7);
-    float star = step(0.9935, r) * smoothstep(0.32, 0.0, d) * (0.3 + 1.6 * hash12(c.yz + 4.0));
-    col += vec3(0.85, 0.9, 1.0) * star * uNight * (1.0 - uCover) * smoothstep(0.0, 0.15, h) * 0.9;
+  // ---- Milky Way (real galactic plane, from the J2000 frame); catalogue stars are drawn separately by stars.js
+  if (uMW > 0.002 && h > -0.05) {
+    vec3 e = uMinv * dir;
+    float sb = dot(e, GAL_POLE);
+    float lon = atan(dot(e, GAL_Y), dot(e, GAL_X));
+    float band = exp(-sb * sb / 0.028);
+    float core = exp(-(lon * lon) / 0.9 - sb * sb / 0.06);
+    float clumps = fbm(vec2(lon * 4.2 + 3.0, sb * 14.0));
+    float lane = smoothstep(0.38, 0.62, fbm(vec2(lon * 9.0, sb * 38.0) + 11.0));
+    float mw = band * (0.35 + 0.9 * clumps) * (1.0 - 0.55 * lane * exp(-sb * sb / 0.004)) + core * 0.9;
+    col += vec3(0.60, 0.66, 0.85) * mw * 0.085 * uMW * smoothstep(0.0, 0.2, h) * (1.0 - uCover);
   }
 
   // ---- moon (procedural disc, correct phase from sun direction)
   float md = dot(dir, uMoonDir);
-  float moonR = 0.0115;
-  if (md > 0.9996 && uMoonVis > 0.0) {
+  float moonR = 0.0082;
+  if (md > 0.9990 && uMoonVis > 0.0) {
     vec3 up = abs(uMoonDir.y) < 0.99 ? vec3(0.0,1.0,0.0) : vec3(1.0,0.0,0.0);
     vec3 right = normalize(cross(up, uMoonDir));
     vec3 upv = cross(uMoonDir, right);
@@ -122,16 +100,16 @@ void main(){
       vec3 n = normalize(right * uv.x + upv * uv.y - uMoonDir * z);
       float lit = smoothstep(-0.04, 0.10, dot(n, uSunDir));
       vec2 mp = uv * 3.2 + vec2(4.0, 1.0);
-      float maria = smoothstep(0.42, 0.62, fbm(mp));
+      float maria = smoothstep(0.40, 0.58, fbm(mp));
       float crat = vnoise(uv * 22.0) * 0.5 + vnoise(uv * 47.0) * 0.3;
-      float alb = 0.78 - 0.32 * maria - 0.10 * crat;
+      float alb = 0.80 - 0.42 * maria - 0.12 * crat;
       alb *= 0.65 + 0.35 * z;                      // limb darkening
-      vec3 mc = vec3(0.98, 0.96, 0.90) * alb * (lit + 0.025) * 2.1;
+      vec3 mc = vec3(0.98, 0.96, 0.90) * alb * (lit + 0.02) * 1.25;
       col = mix(col, mc + col * 0.15, edge * uMoonVis);
     }
   }
   // moon glow
-  col += vec3(0.55, 0.62, 0.8) * pow(max(md, 0.0), 260.0) * 0.10 * uMoonVis * (1.0 - uCover * 0.4);
+  col += vec3(0.55, 0.62, 0.8) * pow(max(md, 0.0), 260.0) * 0.10 * (0.25 + 0.75 * uMoonFrac) * uMoonVis * (1.0 - uCover * 0.4);
 
   // ---- sun disc
   if (uDisc > 0.5) {
@@ -202,6 +180,7 @@ export class Sky {
       uCamPos: { value: new THREE.Vector3() },
       uCover: { value: 0.5 }, uStorm: { value: 0 }, uNight: { value: 0 }, uTime: { value: 0 },
       uDisc: { value: 1 }, uMoonVis: { value: 1 }, uSunVis: { value: 1 }, uSunIntensity: { value: 1 }, uGlow: { value: 1 },
+      uMW: { value: 0 }, uMoonFrac: { value: 0.5 }, uMinv: { value: new THREE.Matrix3() },
       uFlash: { value: 0 }, uFlashDir: { value: G.flashDir },
       uWind: { value: new THREE.Vector2() },
     };
@@ -217,15 +196,23 @@ export class Sky {
     this.light = { sunColor: new THREE.Color(), sunIntensity: 0, moonIntensity: 0, skyL: 0.3, ambientTint: new THREE.Color() };
   }
 
+  // real sun/moon/planet positions for G.date + G.clock (recomputed when the instant moves by >= 5 s)
+  ephemeris() {
+    const key = `${G.date.y}-${G.date.m}-${G.date.d}@${Math.round(G.clock * 720)}`;
+    if (key !== this._key) { this._key = key; this.state = skyState(G.date, G.clock); }
+    return this.state;
+  }
+
   update(camera) {
     const u = this.uniforms;
-    const sp = solarPosition(G.clock, G.dayOfYear);
-    dirFromAzEl(sp.az, sp.el, G.sunDir);
-    const elDeg = sp.el / rad;
+    const st = this.ephemeris();
+    G.sunDir.set(...st.sunDir).normalize();
+    G.moonDir.set(...st.moonDir).normalize();
+    const elDeg = st.sun.el;
     G.sunElev = elDeg;
-    const mp = moonPosition(sp.H, sp.decl, 108, G.dayOfYear);
-    dirFromAzEl(mp.az, mp.el, G.moonDir);
-    const moonEl = mp.el / rad;
+    const moonEl = st.moon.el;
+    const moonFrac = st.moonFrac;
+    const sinSun = Math.sin(elDeg * rad);
 
     const kf = keyframe(elDeg);
     const cover = G.cover;
@@ -247,7 +234,7 @@ export class Sky {
     u.uCloudLit.value.copy(litClear).lerp(overLit, cover).lerp(new THREE.Color(1.0, 0.5, 0.3).multiplyScalar(0.9), duskGlow * 0.5);
     u.uCloudDark.value.copy(darkClear).lerp(overDark, cover);
     // night: moon-tinted clouds
-    const moonUp = smoothstep(-4, 8, moonEl);
+    const moonUp = smoothstep(-4, 8, moonEl) * (0.15 + 0.85 * moonFrac);
     const nightCloud = new THREE.Color(0.012, 0.016, 0.03).multiplyScalar(1 + moonUp * 2.4);
     u.uCloudLit.value.lerp(nightCloud.clone().multiplyScalar(1.6), night);
     u.uCloudDark.value.lerp(nightCloud.clone().multiplyScalar(0.7), night);
@@ -259,6 +246,7 @@ export class Sky {
     u.uGlow.value = 0.35 + 0.65 * smoothstep(12, 0, elDeg) + 0.2 * smoothstep(-10, 0, elDeg);
     u.uCover.value = cover; u.uStorm.value = storm; u.uNight.value = night; u.uTime.value = G.time;
     u.uMoonVis.value = smoothstep(-2, 3, moonEl) * (0.35 + 0.65 * night);
+    u.uMoonFrac.value = moonFrac;
     u.uSunVis.value = smoothstep(-2, 2, elDeg);
     u.uWind.value.set(G.windDir.x, G.windDir.y).multiplyScalar(6 + G.wind * 26);
     u.uFlash.value = G.flash; G.flashDir && u.uFlashDir.value.copy(G.flashDir);
@@ -267,18 +255,24 @@ export class Sky {
     this.mesh.scale.setScalar(camera.far * 0.9);
     u.uGround.value.copy(kf.horizon).multiplyScalar(0.28);
 
+    // naked-eye limiting magnitude: twilight, moonlight and city glow wash out the faint stars
+    const glare = moonFrac * smoothstep(-3, 14, moonEl) * (1 - cover * 0.5);
+    G.starLimit = clamp(-2.0 + 7.4 * Math.pow(night, 1.7) - 1.4 * glare * night - 0.4 * cover, -3, 5.4);
+    u.uMW.value = Math.pow(night, 3) * (1 - 0.85 * glare) * 0.9;
+    u.uMinv.value.set(...[0, 1, 2].flatMap((r) => [st.M[0][r], st.M[1][r], st.M[2][r]]));
+
     // ---- lighting summary consumed by main lights, fog, exposure
     const L = this.light;
     const sunPow = kf.strength * (1 - cover * 0.93) * smoothstep(-1.5, 2.5, elDeg);
     L.sunIntensity = 6.2 * sunPow;
     L.sunColor.copy(kf.sun);
-    const moonPow = smoothstep(-3, 10, moonEl) * night * (1 - cover * 0.85);
+    const moonPow = smoothstep(-3, 10, moonEl) * night * (1 - cover * 0.85) * (0.08 + 0.92 * moonFrac);
     L.moonIntensity = 0.5 * moonPow;
     // apparent sky radiance (for exposure): clear sky vs overcast
     const clearL = 0.2126 * kf.horizon.r + 0.7152 * kf.horizon.g + 0.0722 * kf.horizon.b;
     const overcastL = overLum;
     L.skyL = lerp(clearL * 0.8 + skyLum * 0.4, overcastL, cover) + 0.006;
-    G.dayLevel = L.skyL + L.sunIntensity * Math.max(Math.sin(sp.el), 0) / Math.PI * 0.5;
+    G.dayLevel = L.skyL + L.sunIntensity * Math.max(sinSun, 0) / Math.PI * 0.5;
     // fog colour follows horizon, dimmed by rain (grey haze)
     const fog = kf.horizon.clone();
     const g = fog.r * 0.3 + fog.g * 0.59 + fog.b * 0.11;
