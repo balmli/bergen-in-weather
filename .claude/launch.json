@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "bergen", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5177", "--host", "127.0.0.1"], "port": 5177 }
+  ]
+}

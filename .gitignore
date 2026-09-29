@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vite/
+
+# raw Overpass downloads (large, re-fetchable); the compact result is public/city.json
+data/
+
+# review screenshots written by window.__shot
+shots/
+
+# editor / OS
+.DS_Store
+.claude/settings.local.json
+*.log
