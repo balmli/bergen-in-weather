@@ -52,6 +52,15 @@ export function initUI({ rig, weather, G, params, stars }) {
   $('tl').addEventListener('click', (e) => { const on = G.autoTime === 0; G.autoTime = on ? 0.25 : 0; e.target.classList.toggle('on', on); });
   $('hide').addEventListener('click', () => document.body.classList.add('noui'));
   addEventListener('keydown', (e) => { if (e.key === 'h' || e.key === 'H') document.body.classList.toggle('noui'); });
+  // F toggles fullscreen (Esc leaves it natively)
+  const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+  addEventListener('keydown', (e) => {
+    if ((e.key !== 'f' && e.key !== 'F') || e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target?.tagName || '')) return;
+    e.preventDefault();
+    const de = document.documentElement;
+    if (fsEl()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else (de.requestFullscreen || de.webkitRequestFullscreen)?.call(de);
+  });
   rig.onMode = (m) => { $('tour').classList.toggle('on', m === 'tour'); $('free').classList.toggle('on', m === 'free'); };
   rig.onMode(rig.mode);
   sync();
