@@ -12,3 +12,4 @@ shots/
 .DS_Store
 .claude/settings.local.json
 *.log
+.vercel

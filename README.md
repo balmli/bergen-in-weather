@@ -1,4 +1,7 @@
 # Bergen in weather (three.js)
+
+**Live app: https://bergen-in-weather.vercel.app/**
+
 Run: `npm install && npm run dev` → http://127.0.0.1:5177
 - Starts with a ~3 min cinematic tour (real OSM footprints + real elevation), then free flight. Any key/drag/wheel takes over.
 - Fly: WASD/arrows, Q/E down/up, Shift boost, drag to look, wheel = speed. H hides the UI.
